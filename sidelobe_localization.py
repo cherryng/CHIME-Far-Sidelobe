@@ -24,6 +24,8 @@ from iautils import spectra, spectra_utils, cascade
 from scipy.spatial.transform import Rotation
 import chime_frb_constants as constants
 
+np.set_printoptions(precision=4)
+
 MASK = os.path.join('../data/bad_channel_16K.mask')
 MOUNT_POINT = '/data/frb-archiver/'
 FRB_CONFIGS = os.path.join('/home/zpleunis/software/frb-configs/')
@@ -156,9 +158,9 @@ def PlotBeamArc(ZA,LST, UTCtime, Offset):
 
 def PlotObserved(x, ZA, LST, UTCtime,PeakRA, PeakDec,MaxOff,MinOff):
     RAmax, DECmax = Offset2RADec(MaxOff,ZA,LST, UTCtime)
-    print("Max off", MaxOff, "RA=", RAmax, "DEC=", DECmax )
+    #print("Max off", MaxOff, "RA=", RAmax, "DEC=", DECmax )
     RAmin, DECmin = Offset2RADec(MinOff,ZA,LST, UTCtime)
-    print("Min off", MinOff, "RA=", RAmin, "DEC=", DECmin)
+    #print("Min off", MinOff, "RA=", RAmin, "DEC=", DECmin)
     RAloc, DECloc = Offset2RADec(x,ZA,LST, UTCtime)
     ax4.scatter(RAloc,DECloc,c='k',label='corrected',zorder=10)
     #Uncertainty
@@ -166,7 +168,6 @@ def PlotObserved(x, ZA, LST, UTCtime,PeakRA, PeakDec,MaxOff,MinOff):
     ax4.plot(( RAmin,RAloc),( DECmin,DECloc),c='k',marker='_',zorder=10)
     RAdiff = np.round(np.max([np.abs(RAmax-RAloc), np.abs(RAmin-RAloc)]),1)
     DECdiff = np.round(np.max([np.abs(DECmax-DECloc), np.abs(DECmin-DECloc)]),1)
-    print("Uncertainty: RA=", RAdiff, "Dec=", DECdiff)
     textcoord = '['+str(round(RAloc,1))+"$\pm$"+str(RAdiff)+u'\u00B0'+','+str(round(DECloc,1))+"$\pm$"+str(DECdiff)+u'\u00B0'+']'
     if x>0:
         ax4.text(RAloc,DECloc,textcoord,ha='left',va='top',color='k',fontsize=15)
@@ -175,6 +176,7 @@ def PlotObserved(x, ZA, LST, UTCtime,PeakRA, PeakDec,MaxOff,MinOff):
         ax4.text(RAloc,DECloc,textcoord,ha='right',va='top',color='k',fontsize=15)
         ax4.legend(loc=3,fontsize=9)
     print("Corrected coordinates (J2000): RA=", RAloc, "Dec=", DECloc)
+    print("    Uncertainty: RA=", RAdiff, "Dec=", DECdiff)
 
 def get_frame0_nano(event_time):
     """Get frame0_nano from the frb-configs GitHub repository."""
@@ -205,18 +207,6 @@ def retrieve_parameters(eventid):
 
     return beam_number, date, p
 
-from scipy.optimize import curve_fit
-from scipy import asarray as ar,exp
-def gaus(x,a,x0,sigma):
-    return a*exp(-(x-x0)**2/(2*sigma**2))
-
-def FWHM(X,Y):
-    half_max = (np.max(Y) -np.min(Y)) / 2. + np.min(Y)
-    d = np.sign(half_max - np.array(Y[0:-1])) - np.sign(half_max - np.array(Y[1:]))
-    left_idx = np.where(d > 0)[0]
-    right_idx = np.where(d < 0)[-1]
-    print(d, np.where(d > 0))
-    return X[right_idx], X[left_idx] , half_max
 
 def FWHM1(X,Y):
     half_max = (np.max(Y) -np.min(Y)) / 2. + np.min(Y)
@@ -225,7 +215,7 @@ def FWHM1(X,Y):
     right_idx = np.where(d < 0)[0][-1]
     return X[right_idx], X[left_idx] , half_max
 
-#Command line input options
+
 @click.command()
 @click.option('--eventid', type=int,
     help="Query the database for parameters associated with the event ID.")
@@ -251,21 +241,16 @@ def FWHM1(X,Y):
 def get_intensity(eventid, nsub, outfile, dm, save, t1, t2, ts, slope,fit):
 
     #find out how many beams
-    beam_numbers, event_time, path = retrieve_parameters(eventid)
-    date = str(event_time).split()[0]
+    beam_numbers, UTCtime, path = retrieve_parameters(eventid)
+    date = str(UTCtime).split()[0]
     ymd = os.path.join(*date.split('-'))
-    print("Event time:", event_time, "Path:", path)
+    print("Event time:", UTCtime, "Path:", path)
     print("Detected beams", beam_numbers)
 
 
     #===[TODO] make it only 4 beams somehow
-    bid=0
-    HighestSNR = beam_numbers[bid]
-    NSbeam = int(str(HighestSNR).zfill(4)[1:4])
-    beams2plot = []
-    for i in range(len(beam_numbers)):
-        beams2plot.append(i)
-    nbeams = len(beams2plot)
+    nbeams = len(beam_numbers)
+    PeakSNRs = np.zeros(nbeams)
 
     #Set up the plot ticks according to input values 
     ax3.xaxis.set_minor_locator(ticker.MultipleLocator(ts))
@@ -277,7 +262,7 @@ def get_intensity(eventid, nsub, outfile, dm, save, t1, t2, ts, slope,fit):
     Peaks = np.zeros(4)
 
     #query database
-    for beam in beams2plot:
+    for beam in range(nbeams):
         beamid = beam_numbers[beam]
 
         #Read from 1024-freq npz file
@@ -299,11 +284,8 @@ def get_intensity(eventid, nsub, outfile, dm, save, t1, t2, ts, slope,fit):
         #print("Working on intensity in shape", Intensity.shape)
 
         colid = int(str(beamid).zfill(4)[0])  
-        if beamid == 129:
-            colid = 1
-        print("    Beam=",str(beamid).zfill(4),"Column ID=", colid)
 
-        #Plot intensity imshow
+        #Plot intensity imshow (showing at most 4 one from each column)
         ax = plt.subplot2grid((3,8), (0,colid*2), rowspan=1, colspan=2)
         im = ax.imshow(Intensity,aspect="auto", origin='lower',interpolation=None)
         ax.set_xlabel('Time bin')
@@ -340,7 +322,8 @@ def get_intensity(eventid, nsub, outfile, dm, save, t1, t2, ts, slope,fit):
         ax3.plot(Spacing,snr,label=str(beamid),c=colors[beam])
         
         index, value = max(enumerate(snr), key=operator.itemgetter(1))
-        print("    SNR peak at ID=",index, "bin spacing=",np.round(Spacing[index],3), "equiv. MHz=",np.round(Spacing[index]*400/float(nsub),3))
+        print("    Beam=",str(beamid).zfill(4),"Column ID=", colid," SNR peak at ID=",index, "bin spacing=",np.round(Spacing[index],3), "equiv. MHz=",np.round(Spacing[index]*400/float(nsub),3))
+        PeakSNRs[beam] = snr[index]
         firstbin = peaks[0]%Spacing[index]
         j=0
         while int(firstbin+Spacing[index]*j)<nsub:
@@ -354,37 +337,30 @@ def get_intensity(eventid, nsub, outfile, dm, save, t1, t2, ts, slope,fit):
         
         SumSNR = SumSNR + snr
 
-        #--[TO-DO] need to make this more robust if col1 is not available
-        UTCtime = event_time
-        if colid == 2:
-            UTCtime = event_time
-            
+    print("Array of peak SNRs", PeakSNRs)
+    BestBeam, BestSNR = max(enumerate(PeakSNRs), key=operator.itemgetter(1))
+    NSbeam = int(str(beam_numbers[BestBeam]).zfill(4)[1:4])
+    print("Best beam=", beam_numbers[BestBeam],"Best NS beam ID=", NSbeam)
+    LST, ZA = get_LST_ZA(UTCtime, NSbeam) 
+    print("Zenith angle=", np.round(ZA,3), "deg, Meridian LST=", np.round(LST,3) , "deg")
+
     ax5.plot(Spacing,SumSNR,c='k',label='Sum beams')
     index, value = max(enumerate(SumSNR), key=operator.itemgetter(1))
-    BestMHz = Spacing[index]*400/float(nsub)
+    AvgMHz = Spacing[index]*400/float(nsub)
     ax5.scatter(Spacing[index],value,c='k',s=5)
-    print("Best value", Spacing[index], BestMHz)
+    ax5.set_xlim([np.min(Spacing), np.max(Spacing)])
 
     x=Spacing
     y=SumSNR
-    n = len(x)
-    mean=sum(x * y) / sum(y)
-    sigma = np.sqrt(sum(y * (x - mean)**2) / sum(y))
-    print("    mean=", np.round(mean,1), "sigma=", np.round(sigma,1), "n=", n)
-    if math.isnan(sigma):
-        print("    Got a problem: sigma is nan")
-        sigma=0.2
-    w1 = 4
-    w2 = 5
-    hm = 2400
-    ax5.set_xlim([np.min(Spacing), np.max(Spacing)])
+
+    #Assume some uncertainty by default
+    w1 = w2 = 10
 
     if fit:
         w1, w2, hm = FWHM1(x,y)
-        print("FWHM:",w1,w2,hm)
+        #print("FWHM:",w1,w2,hm)
         ax5.plot((w1,w2),(hm,hm),c='c',label='FWHM as error')
     ax5.legend(loc=0,fontsize=6)
-    AvgMHz = BestMHz 
     Peaks = Peaks[np.nonzero(Peaks)]
 
     #Figure out the direction - NOT WORKING VERY WELL! require manual input
@@ -404,26 +380,21 @@ def get_intensity(eventid, nsub, outfile, dm, save, t1, t2, ts, slope,fit):
 
     #Apply empirical replationship 
     OffsetDeg = 772.9433400352848/AvgMHz+1.8440911751394002
-    print("Blob separation: Avg=", np.round(AvgMHz,3), "MHz, EW offset=", np.round(OffsetDeg,3), "deg")
+    print("Most likely bin spacing=", np.round(Spacing[index],3),", Avg blob separation=", np.round(AvgMHz,3), "MHz, EW offset=", np.round(OffsetDeg,3), "deg")
     MaxOff = 772.9433400352848/MHz_max+1.8440911751394002
     MinOff = 772.9433400352848/MHz_min+1.8440911751394002
-    print("   Max=", np.round(MHz_max,3), "MHz, EW Offset=", np.round(MaxOff,3),"deg")
-    print("   Min=", np.round(MHz_min,3), "MHz, EW Offset=", np.round(MinOff,3),"deg")
+    print("   Max EW Offset=", np.round(MaxOff,3),"deg, equiv blob sep=", np.round(MHz_max,3), "MHz")
+    print("   Min EW Offset=", np.round(MinOff,3),"deg, equiv blob sep=", np.round(MHz_min,3), "MHz")
 
-    LST, ZA = get_LST_ZA(UTCtime, NSbeam) 
-    print("NS beam=", NSbeam, "Zenith angle=", ZA, "deg UTCtime=", UTCtime, "Meridian LST=", LST , "deg")
     PeakRA, PeakDec = PlotBeamArc( ZA, LST, UTCtime, OffsetDeg) 
     PlotObserved( OffsetDeg , ZA, LST, UTCtime, PeakRA, PeakDec,MaxOff,MinOff)
 
 
     #Save plots
     plt.figtext(0.5,0.93,"Event "+str(eventid)+" || using "+str(nbeams)+"("+str(len(beam_numbers))+") beams || Sep.="+str(np.round(AvgMHz,1))+"MHz || EW offset="+str(np.round(OffsetDeg,1))+u'\u00B0',ha="center",fontsize=15)
-#    plt.savefig("Hsiu-Hsien-Paper/SidelobeAnalysis_Event"+str(eventid)+".png",bbox_inches='tight')
-    plt.savefig("tmp.png",bbox_inches='tight')
-    os.system("chmod 777 tmp.png")
-#    os.system("chmod 777 Hsiu-Hsien-Paper/SidelobeAnalysis_Event"+str(eventid)+".png")
-#    os.system("rsync -acvP Hsiu-Hsien-Paper/SidelobeAnalysis_Event"+str(eventid)+".png precommissioning@frb-L4:/home/precommissioning/public_html/sidelobe.png")
-    os.system("rsync -acvP tmp.png precommissioning@frb-L4:/home/precommissioning/public_html/sidelobe.png")
+    plt.savefig("SidelobeAnalysis_Event"+str(eventid)+".png",bbox_inches='tight')
+    os.system("chmod 777 SidelobeAnalysis_Event"+str(eventid)+".png")
+    os.system("rsync -acvP SidelobeAnalysis_Event"+str(eventid)+".png precommissioning@frb-L4:/home/precommissioning/public_html/sidelobe.png")
     print ("On your browser, visit: https://frb.chimenet.ca/~precommissioning/sidelobe.png")
 
 
